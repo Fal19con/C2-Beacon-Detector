@@ -1,0 +1,40 @@
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# SQLite databases (generated at runtime, not source)
+*.db
+*.sqlite3
+
+# Streamlit secrets / credentials — never commit these
+.streamlit/secrets.toml
+.env
+*.env
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Pytest / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

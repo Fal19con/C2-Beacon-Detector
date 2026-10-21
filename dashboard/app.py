@@ -1,5 +1,5 @@
 """
-app.py — C2 Beacon Detector Streamlit Dashboard
+app.py — C2 Beacon Detector Streamlit Dashboard (Hack The Box Aesthetic)
 """
 
 from __future__ import annotations
@@ -30,55 +30,156 @@ logging.basicConfig(level=logging.WARNING)
 # ── Page config ────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="C2 Beacon Detector",
-    page_icon="🕵️",
+    page_icon=":material/radar:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────
+# ── Custom CSS: Hack The Box Theme ──────────────────────────────────────────
 st.markdown(
     """
 <style>
 /* Import Google Font */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@300;400;500;600;700&display=swap');
 
-/* Global */
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+/* Global Font & Theme */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    color: #E6EDF3;
+}
 
-/* Dark background accent */
-.stApp { background: linear-gradient(135deg, #0a0e1a 0%, #0d1526 50%, #0a0e1a 100%); }
+code, pre, .stCodeBlock {
+    font-family: 'JetBrains+Mono', monospace !important;
+}
+
+/* Background: Near-black navy (#0D1117 to #141D2B) */
+.stApp {
+    background: linear-gradient(145deg, #0D1117 0%, #101725 45%, #141D2B 100%);
+    color: #E6EDF3;
+}
 
 /* Sidebar */
 [data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #0f1a2e 0%, #0a1020 100%);
-    border-right: 1px solid #1e3a5f;
+    background-color: #101826 !important;
+    border-right: 1px solid #1E293B;
 }
 
-/* Metric cards */
-[data-testid="metric-container"] {
-    background: linear-gradient(135deg, #0f2040 0%, #0a1830 100%);
-    border: 1px solid #1e4080;
-    border-radius: 12px;
-    padding: 16px;
-    box-shadow: 0 4px 20px rgba(0,120,255,0.15);
+/* Metric cards: Surface background one shade lighter (#162234) */
+[data-testid="stMetric"], [data-testid="metric-container"] {
+    background: #162234 !important;
+    border: 1px solid #223249 !important;
+    border-radius: 8px !important;
+    padding: 16px !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35) !important;
 }
 
-/* Threat level badge */
-.threat-critical { color: #ff4444; font-weight: 700; }
-.threat-high     { color: #ff8c00; font-weight: 700; }
-.threat-medium   { color: #ffd700; font-weight: 700; }
-.threat-low      { color: #44ff88; font-weight: 700; }
+[data-testid="stMetricValue"] {
+    color: #9FEF00 !important;
+    font-weight: 700 !important;
+}
 
-/* Section headers */
-h2, h3 { color: #4db8ff !important; }
+/* Primary buttons: Neon green accent (#9FEF00) */
+button[kind="primary"], .stButton > button {
+    background-color: #162234 !important;
+    color: #9FEF00 !important;
+    border: 1px solid #9FEF00 !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.3px;
+    transition: all 0.2s ease-in-out;
+}
 
-/* Styled info box */
+button[kind="primary"]:hover, .stButton > button:hover {
+    background-color: #9FEF00 !important;
+    color: #0D1117 !important;
+    box-shadow: 0 0 12px rgba(159, 239, 0, 0.45) !important;
+}
+
+/* Download button */
+.stDownloadButton > button {
+    background-color: #162234 !important;
+    color: #9FEF00 !important;
+    border: 1px solid #9FEF00 !important;
+    border-radius: 6px !important;
+    font-weight: 600 !important;
+    transition: all 0.2s ease-in-out;
+}
+
+.stDownloadButton > button:hover {
+    background-color: #9FEF00 !important;
+    color: #0D1117 !important;
+    box-shadow: 0 0 12px rgba(159, 239, 0, 0.45) !important;
+}
+
+/* Expanders */
+div[data-testid="stExpander"] {
+    background-color: #141D2B !important;
+    border: 1px solid #223249 !important;
+    border-radius: 8px !important;
+    margin-bottom: 12px;
+}
+
+/* Headings */
+h1, h2, h3, h4 {
+    color: #E6EDF3 !important;
+    font-weight: 700 !important;
+}
+
+h1 .accent, h2 .accent, h3 .accent {
+    color: #9FEF00 !important;
+}
+
+/* Status severity pill/chip badges */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 10px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.badge-critical {
+    background: rgba(255, 68, 68, 0.15);
+    color: #FF4444;
+    border: 1px solid rgba(255, 68, 68, 0.4);
+}
+
+.badge-high {
+    background: rgba(255, 140, 0, 0.15);
+    color: #FF8C00;
+    border: 1px solid rgba(255, 140, 0, 0.4);
+}
+
+.badge-medium {
+    background: rgba(255, 215, 0, 0.15);
+    color: #FFD700;
+    border: 1px solid rgba(255, 215, 0, 0.4);
+}
+
+.badge-low {
+    background: rgba(159, 239, 0, 0.15);
+    color: #9FEF00;
+    border: 1px solid rgba(159, 239, 0, 0.4);
+}
+
+/* Info Box */
 .info-box {
-    background: rgba(0, 100, 200, 0.15);
-    border-left: 4px solid #0080ff;
-    border-radius: 4px;
-    padding: 12px 16px;
-    margin: 8px 0;
+    background: #162234;
+    border-left: 4px solid #9FEF00;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 12px 0;
+    color: #C9D1D9;
+}
+
+/* Active highlights */
+.highlight-score {
+    color: #9FEF00;
+    font-weight: bold;
 }
 </style>
 """,
@@ -86,14 +187,14 @@ h2, h3 { color: #4db8ff !important; }
 )
 
 # ── Header ─────────────────────────────────────────────────────────────────
-col_logo, col_title = st.columns([1, 10])
+col_logo, col_title = st.columns([1, 11])
 with col_logo:
-    st.markdown("## 🕵️")
+    st.markdown("<h1 style='margin:0; color:#9FEF00;'>:material/radar:</h1>", unsafe_allow_html=True)
 with col_title:
     st.markdown(
-        "<h1 style='margin:0; color:#4db8ff; font-weight:700;'>C2 Beacon Detector</h1>"
-        "<p style='margin:0; color:#7fa8d0; font-size:0.9rem;'>"
-        "Network traffic analysis · Periodic beaconing detection · Threat intelligence</p>",
+        "<h1 style='margin:0; font-weight:700;'><span style='color:#9FEF00;'>C2</span> Beacon Detector</h1>"
+        "<p style='margin:0; color:#8B949E; font-size:0.92rem;'>"
+        "Statistical timing & payload consistency · Periodic beaconing detection · HTB SecOps edition</p>",
         unsafe_allow_html=True,
     )
 
@@ -103,11 +204,15 @@ st.markdown("---")
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    st.markdown("### 📡 Data Source")
+    st.markdown("### :material/sensors: Data Source")
 
     data_source = st.radio(
         "Select data source",
-        ["🧪 Synthetic sample data", "📁 Zeek log directory", "📄 Upload CSV"],
+        [
+            ":material/science: Synthetic sample data",
+            ":material/folder: Zeek log directory",
+            ":material/upload_file: Upload CSV",
+        ],
         key="data_source_radio",
     )
 
@@ -115,15 +220,15 @@ with st.sidebar:
     source_label = ""
 
     # ── Synthetic ──────────────────────────────────────────────────────
-    if data_source == "🧪 Synthetic sample data":
+    if data_source == ":material/science: Synthetic sample data":
         synth_seed = st.number_input("Random seed", value=42, min_value=0, max_value=99999, step=1)
         num_benign = st.slider("Benign connections", 5000, 30000, 15000, step=1000)
         num_days = st.slider("Simulation days", 3, 14, 5)
-        if st.button("🔄 Generate / Refresh", use_container_width=True):
+        if st.button("Generate / Refresh", icon=":material/refresh:", width="stretch"):
             st.cache_data.clear()
 
         @st.cache_data(show_spinner="Generating synthetic traffic …")
-        def _load_synthetic(seed, nb, nd):
+        def _load_synthetic(seed: int, nb: int, nd: int) -> tuple[pd.DataFrame, str]:
             df, beacon_host = generate_sample_logs(
                 num_benign=nb, num_days=nd, seed=seed
             )
@@ -131,51 +236,51 @@ with st.sidebar:
 
         raw_df, _beacon_host = _load_synthetic(int(synth_seed), num_benign, num_days)
         source_label = f"Synthetic ({len(raw_df):,} rows)"
-        st.success(f"✅ {source_label}")
+        st.success(source_label, icon=":material/check_circle:")
         st.caption(f"Injected beacon: `{_beacon_host}`")
 
     # ── Zeek directory ─────────────────────────────────────────────────
-    elif data_source == "📁 Zeek log directory":
+    elif data_source == ":material/folder: Zeek log directory":
         log_dir = st.text_input("Zeek log directory path", placeholder="/var/log/zeek/current")
-        if log_dir and st.button("📂 Load Zeek Logs", use_container_width=True):
+        if log_dir and st.button("Load Zeek Logs", icon=":material/folder_open:", width="stretch"):
             with st.spinner("Loading Zeek logs …"):
                 try:
                     raw_df = load_zeek_logs(log_dir)
                     source_label = f"Zeek ({len(raw_df):,} rows)"
-                    st.success(f"✅ {source_label}")
+                    st.success(source_label, icon=":material/check_circle:")
                 except Exception as exc:
-                    st.error(f"❌ {exc}")
+                    st.error(str(exc), icon=":material/error:")
 
     # ── CSV upload ─────────────────────────────────────────────────────
-    elif data_source == "📄 Upload CSV":
+    elif data_source == ":material/upload_file: Upload CSV":
         uploaded = st.file_uploader("Upload CSV (canonical schema)", type=["csv"])
         if uploaded:
             try:
                 raw_df = pd.read_csv(uploaded, parse_dates=["timestamp"])
                 raw_df["timestamp"] = pd.to_datetime(raw_df["timestamp"], utc=True)
                 source_label = f"CSV ({len(raw_df):,} rows)"
-                st.success(f"✅ {source_label}")
+                st.success(source_label, icon=":material/check_circle:")
             except Exception as exc:
-                st.error(f"❌ Parse error: {exc}")
+                st.error(f"Parse error: {exc}", icon=":material/error:")
 
     st.markdown("---")
 
     # ── Detection thresholds ───────────────────────────────────────────
-    st.markdown("### ⚙️ Detection Thresholds")
+    st.markdown("### :material/tune: Detection Thresholds")
 
-    with st.expander("Filter 1 — Persistence", expanded=False):
+    with st.expander("Filter 1 — Persistence", expanded=False, icon=":material/timelapse:"):
         min_window_coverage_pct = st.slider(
             "Min window coverage (%)", 10, 100, 30, 5,
             help="% of days in dataset where the host must be active"
         ) / 100.0
 
-    with st.expander("Filter 2 — Volume", expanded=False):
+    with st.expander("Filter 2 — Volume", expanded=False, icon=":material/bar_chart:"):
         min_total_requests = st.slider(
             "Min total requests", 5, 500, 20, 5,
             help="Minimum total connections to the (host, uri) group"
         )
 
-    with st.expander("Filter 3 — Response Size Consistency", expanded=False):
+    with st.expander("Filter 3 — Response Size Consistency", expanded=False, icon=":material/data_usage:"):
         tolerance_pct = st.slider(
             "Response size tolerance (±%)", 10, 200, 50, 10,
             help="Allowed deviation from median response size"
@@ -185,7 +290,7 @@ with st.sidebar:
             help="% of responses that must be within the tolerance band"
         ) / 100.0
 
-    with st.expander("Filter 4 — Timing Uniformity", expanded=False):
+    with st.expander("Filter 4 — Timing Uniformity", expanded=False, icon=":material/schedule:"):
         jitter_tolerance_pct = st.slider(
             "Timing jitter tolerance (±%)", 5, 100, 30, 5,
             help="Allowed deviation from estimated sleep interval"
@@ -206,7 +311,7 @@ with st.sidebar:
     st.markdown("---")
 
     # ── VirusTotal ─────────────────────────────────────────────────────
-    st.markdown("### 🔍 VirusTotal (optional)")
+    st.markdown("### :material/security: VirusTotal (optional)")
     vt_api_key = st.text_input(
         "VT API Key", type="password",
         placeholder="Paste your v3 API key …",
@@ -220,7 +325,7 @@ if raw_df is None or raw_df.empty:
     st.markdown(
         """
         <div class="info-box">
-        👈 Select a data source in the sidebar to get started.<br>
+        :material/arrow_back: Select a data source in the sidebar to get started.<br>
         The synthetic sample option works immediately — no files needed.
         </div>
         """,
@@ -229,7 +334,7 @@ if raw_df is None or raw_df.empty:
     st.stop()
 
 # Run the detection engine
-with st.spinner("🔎 Running beacon detection …"):
+with st.spinner("Running beacon detection …"):
     results_df = detect_beacons(
         raw_df,
         min_window_coverage_pct=min_window_coverage_pct,
@@ -255,27 +360,27 @@ top_score = float(results_df["composite_score"].max()) if flagged else 0.0
 
 col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Total (host, uri) Groups", f"{total_groups:,}")
+    st.metric("Total Groups", f"{total_groups:,}", icon=":material/hub:")
 with col2:
-    st.metric("🚨 Flagged Candidates", flagged, delta=None)
+    st.metric("Flagged Candidates", flagged, delta=None, icon=":material/warning:")
 with col3:
-    st.metric("🔝 Highest Score", f"{top_score:.3f}")
+    st.metric("Highest Score", f"{top_score:.3f}", icon=":material/speed:")
 with col4:
-    st.metric("📊 Ingested Rows", f"{len(raw_df):,}")
+    st.metric("Ingested Rows", f"{len(raw_df):,}", icon=":material/dataset:")
 
 st.markdown("---")
 
 # ── Results table ──────────────────────────────────────────────────────────
-st.markdown("### 🚨 Beacon Candidates")
+st.markdown("### :material/warning: Beacon Candidates")
 
 if results_df.empty:
-    st.info("✅ No beacon candidates detected with current thresholds. Try relaxing the filters.")
+    st.info("No beacon candidates detected with current thresholds. Try relaxing the filters.", icon=":material/check_circle:")
 else:
     # VirusTotal enrichment (only if key provided)
     display_df = results_df.drop(columns=["clean_deltas"], errors="ignore").copy()
 
     if vt_api_key:
-        with st.spinner("🔍 Enriching with VirusTotal …"):
+        with st.spinner("Enriching with VirusTotal …"):
             vt_results = []
             for host in display_df["dest_host"]:
                 vt_data = enrich_host(host, vt_api_key)
@@ -284,18 +389,18 @@ else:
             display_df["vt_engines"] = [r["vt_total_engines"] for r in vt_results]
             display_df["vt_error"] = [r["vt_error"] for r in vt_results]
 
-    # Threat level helper
-    def _threat_label(score: float) -> str:
+    # Threat level label helper with Material Symbols
+    def _threat_badge_text(score: float) -> str:
         if score >= 0.85:
-            return "🔴 CRITICAL"
+            return ":material/dangerous: CRITICAL"
         elif score >= 0.70:
-            return "🟠 HIGH"
+            return ":material/warning: HIGH"
         elif score >= 0.50:
-            return "🟡 MEDIUM"
+            return ":material/info: MEDIUM"
         else:
-            return "🟢 LOW"
+            return ":material/check_circle: LOW"
 
-    display_df.insert(0, "Threat", display_df["composite_score"].apply(_threat_label))
+    display_df.insert(0, "Threat", display_df["composite_score"].apply(_threat_badge_text))
 
     # Rename for readability
     col_rename = {
@@ -313,7 +418,6 @@ else:
     }
     display_renamed = display_df.rename(columns=col_rename)
 
-    # width='stretch' replaces use_container_width=True (Streamlit ≥1.66)
     st.dataframe(
         display_renamed,
         width="stretch",
@@ -329,16 +433,17 @@ else:
     # ── CSV download ───────────────────────────────────────────────────
     csv_bytes = display_renamed.to_csv(index=False).encode()
     st.download_button(
-        "⬇️ Download Results CSV",
+        "Download Results CSV",
         csv_bytes,
         "beacon_results.csv",
         "text/csv",
+        icon=":material/download:",
     )
 
     st.markdown("---")
 
     # ── Scatter plot ───────────────────────────────────────────────────
-    st.markdown("### 📈 Sleep Interval vs. Composite Score")
+    st.markdown("### :material/show_chart: Sleep Interval vs. Composite Score")
 
     plot_df = results_df.drop(columns=["clean_deltas"], errors="ignore").copy()
     plot_df["est_sleep_sec"] = plot_df["est_sleep_sec"].clip(lower=0.1)
@@ -351,7 +456,11 @@ else:
         color="composite_score",
         hover_name="dest_host",
         hover_data={"uri": True, "unique_clients": True, "timing_cv": ":.4f", "payload_cv": ":.4f"},
-        color_continuous_scale="Plasma",
+        color_continuous_scale=[
+            (0.0, "#162234"),
+            (0.5, "#00E5FF"),
+            (1.0, "#9FEF00"),
+        ],
         log_x=True,
         title="Beacon candidates: sleep interval vs. detection score",
         labels={
@@ -363,21 +472,20 @@ else:
         size_max=40,
     )
     fig.update_layout(
-        paper_bgcolor="rgba(10,15,30,0.8)",
-        plot_bgcolor="rgba(10,15,30,0.8)",
-        font=dict(family="Inter", color="#c0d8f0"),
+        paper_bgcolor="#101725",
+        plot_bgcolor="#101725",
+        font=dict(family="Inter", color="#E6EDF3"),
         coloraxis_colorbar=dict(title="Score"),
         height=450,
     )
-    fig.update_xaxes(gridcolor="#1a3050", zeroline=False)
-    fig.update_yaxes(gridcolor="#1a3050", zeroline=False, range=[0, 1.05])
-    # width='stretch' replaces use_container_width=True (Streamlit ≥1.66)
+    fig.update_xaxes(gridcolor="#1E293B", zeroline=False)
+    fig.update_yaxes(gridcolor="#1E293B", zeroline=False, range=[0, 1.05])
     st.plotly_chart(fig, width="stretch")
 
     st.markdown("---")
 
     # ── Per-candidate drill-downs ──────────────────────────────────────
-    st.markdown("### 🔬 Candidate Drill-Down")
+    st.markdown("### :material/biotech: Candidate Drill-Down")
 
     for i, row in results_df.iterrows():
         host = row["dest_host"]
@@ -385,18 +493,32 @@ else:
         score = row["composite_score"]
         deltas = row.get("clean_deltas", [])
 
-        label = f"{_threat_label(score)}  **{host}**{uri_val}  (score: {score:.3f})"
-        with st.expander(label):
+        if score >= 0.85:
+            badge_html = "<span class='badge badge-critical'>CRITICAL</span>"
+            threat_icon = ":material/dangerous:"
+        elif score >= 0.70:
+            badge_html = "<span class='badge badge-high'>HIGH</span>"
+            threat_icon = ":material/warning:"
+        elif score >= 0.50:
+            badge_html = "<span class='badge badge-medium'>MEDIUM</span>"
+            threat_icon = ":material/info:"
+        else:
+            badge_html = "<span class='badge badge-low'>LOW</span>"
+            threat_icon = ":material/check_circle:"
+
+        label = f"{threat_icon} {host}{uri_val} · score: {score:.3f}"
+        with st.expander(label, icon=threat_icon):
+            st.markdown(f"Status: {badge_html} &nbsp;&nbsp; Destination: `<strong>{host}{uri_val}</strong>`", unsafe_allow_html=True)
             dcol1, dcol2, dcol3 = st.columns(3)
             with dcol1:
-                st.metric("Est. Sleep", f"{row['est_sleep_sec']:.1f}s")
-                st.metric("Total Requests", int(row["total_requests"]))
+                st.metric("Est. Sleep", f"{row['est_sleep_sec']:.1f}s", icon=":material/schedule:")
+                st.metric("Total Requests", int(row["total_requests"]), icon=":material/swap_vert:")
             with dcol2:
-                st.metric("Timing CV", f"{row['timing_cv']:.4f}")
-                st.metric("Payload CV", f"{row['payload_cv']:.4f}")
+                st.metric("Timing CV", f"{row['timing_cv']:.4f}", icon=":material/timeline:")
+                st.metric("Payload CV", f"{row['payload_cv']:.4f}", icon=":material/analytics:")
             with dcol3:
-                st.metric("Domain Entropy", f"{row['domain_entropy']:.4f}")
-                st.metric("Unique Clients", int(row["unique_clients"]))
+                st.metric("Domain Entropy", f"{row['domain_entropy']:.4f}", icon=":material/lock:")
+                st.metric("Unique Clients", int(row["unique_clients"]), icon=":material/devices:")
 
             if deltas:
                 fig_hist = go.Figure()
@@ -404,7 +526,7 @@ else:
                     go.Histogram(
                         x=deltas,
                         nbinsx=40,
-                        marker_color="#0080ff",
+                        marker_color="#9FEF00",
                         opacity=0.85,
                         name="Inter-request delta (s)",
                     )
@@ -414,15 +536,14 @@ else:
                     xaxis_title="Delta (seconds)",
                     yaxis_title="Count",
                     template="plotly_dark",
-                    paper_bgcolor="rgba(10,15,30,0.8)",
-                    plot_bgcolor="rgba(10,15,30,0.8)",
-                    font=dict(family="Inter", color="#c0d8f0"),
+                    paper_bgcolor="#101725",
+                    plot_bgcolor="#101725",
+                    font=dict(family="Inter", color="#E6EDF3"),
                     height=300,
                     showlegend=False,
                 )
-                fig_hist.update_xaxes(gridcolor="#1a3050")
-                fig_hist.update_yaxes(gridcolor="#1a3050")
-                # width='stretch' replaces use_container_width=True (Streamlit ≥1.66)
+                fig_hist.update_xaxes(gridcolor="#1E293B")
+                fig_hist.update_yaxes(gridcolor="#1E293B")
                 st.plotly_chart(fig_hist, width="stretch")
 
                 arr = np.array(deltas)
@@ -435,16 +556,16 @@ else:
                 )
 
 # ── Raw log preview ────────────────────────────────────────────────────────
-with st.expander("🗂️ Raw Log Preview (first 10 rows)", expanded=False):
+with st.expander("Raw Log Preview (first 10 rows)", expanded=False, icon=":material/table_rows:"):
     st.caption("Canonical-schema ingested data — sanity-check your ingestor output here.")
     st.dataframe(raw_df.head(10), width="stretch", hide_index=True)
     st.caption(f"dtypes: {dict(raw_df.dtypes)}")
 
 # ── Scan history ───────────────────────────────────────────────────────────
-with st.expander("🗄️ Past Scan History (SQLite)", expanded=False):
+with st.expander("Past Scan History (SQLite)", expanded=False, icon=":material/history:"):
     history_df = load_history()
     if history_df.empty:
-        st.info("No past scans stored yet.")
+        st.info("No past scans stored yet.", icon=":material/info:")
     else:
         st.dataframe(history_df, width="stretch", hide_index=True)
         st.caption(f"{len(history_df)} rows across {history_df['run_id'].nunique()} runs")

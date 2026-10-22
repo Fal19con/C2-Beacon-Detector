@@ -19,7 +19,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest.synthetic_generator import generate_sample_logs
+from ingest.synthetic_generator import generate_sample_logs, CANONICAL_COLUMNS
 from ingest.zeek_ingestor import load_zeek_logs
 from detection.engine import detect_beacons
 from enrichment.virustotal import enrich_host
@@ -216,6 +216,10 @@ with st.sidebar:
         key="data_source_radio",
     )
 
+    # Initialize zeek_df in session state if missing, or clear when switching data source
+    if "zeek_df" not in st.session_state or data_source != ":material/folder: Zeek log directory":
+        st.session_state.zeek_df = None
+
     raw_df: pd.DataFrame | None = None
     source_label = ""
 
@@ -242,26 +246,80 @@ with st.sidebar:
     # ── Zeek directory ─────────────────────────────────────────────────
     elif data_source == ":material/folder: Zeek log directory":
         log_dir = st.text_input("Zeek log directory path", placeholder="/var/log/zeek/current")
-        if log_dir and st.button("Load Zeek Logs", icon=":material/folder_open:", width="stretch"):
+        button_clicked = log_dir and st.button("Load Zeek Logs", icon=":material/folder_open:", width="stretch")
+        if button_clicked:
             with st.spinner("Loading Zeek logs …"):
                 try:
-                    raw_df = load_zeek_logs(log_dir)
-                    source_label = f"Zeek ({len(raw_df):,} rows)"
-                    st.success(source_label, icon=":material/check_circle:")
+                    st.session_state.zeek_df = load_zeek_logs(log_dir)
+                    st.success(f"Zeek ({len(st.session_state.zeek_df):,} rows)", icon=":material/check_circle:")
                 except Exception as exc:
+                    st.session_state.zeek_df = None
                     st.error(str(exc), icon=":material/error:")
+
+        raw_df = st.session_state.zeek_df
+        if raw_df is not None:
+            source_label = f"Zeek ({len(raw_df):,} rows)"
+            if not button_clicked:
+                st.caption(f"Loaded: **{source_label}**")
 
     # ── CSV upload ─────────────────────────────────────────────────────
     elif data_source == ":material/upload_file: Upload CSV":
         uploaded = st.file_uploader("Upload CSV (canonical schema)", type=["csv"])
         if uploaded:
+            uploaded_df: pd.DataFrame | None = None
             try:
-                raw_df = pd.read_csv(uploaded, parse_dates=["timestamp"])
-                raw_df["timestamp"] = pd.to_datetime(raw_df["timestamp"], utc=True)
-                source_label = f"CSV ({len(raw_df):,} rows)"
-                st.success(source_label, icon=":material/check_circle:")
+                uploaded_df = pd.read_csv(uploaded)
             except Exception as exc:
-                st.error(f"Parse error: {exc}", icon=":material/error:")
+                st.error(f"CSV read error: {exc}", icon=":material/error:")
+
+            if uploaded_df is not None:
+                # 1. Validate required columns
+                missing_cols = [col for col in CANONICAL_COLUMNS if col not in uploaded_df.columns]
+                if missing_cols:
+                    st.error(
+                        f"CSV schema error: missing required column(s): {', '.join(missing_cols)}. "
+                        f"Expected columns: {', '.join(CANONICAL_COLUMNS)}",
+                        icon=":material/error:",
+                    )
+                else:
+                    # 2. Validate and coerce data types
+                    coerced_df = uploaded_df[CANONICAL_COLUMNS].copy()
+                    valid = True
+
+                    # Coerce timestamp
+                    try:
+                        coerced_df["timestamp"] = pd.to_datetime(
+                            coerced_df["timestamp"], utc=True, format="mixed", errors="raise"
+                        )
+                    except Exception as exc:
+                        st.error(f"CSV validation error: failed to parse 'timestamp' as datetime ({exc})", icon=":material/error:")
+                        valid = False
+
+                    # Coerce bytes_sent and bytes_received to integer
+                    if valid:
+                        for num_col in ("bytes_sent", "bytes_received"):
+                            try:
+                                coerced_df[num_col] = pd.to_numeric(coerced_df[num_col], errors="raise").astype(int)
+                            except Exception as exc:
+                                st.error(
+                                    f"CSV validation error: column '{num_col}' must be numeric integer ({exc})",
+                                    icon=":material/error:",
+                                )
+                                valid = False
+                                break
+
+                    # Coerce string columns
+                    if valid:
+                        for str_col in ("client_ip", "dest_host", "uri", "protocol", "method"):
+                            coerced_df[str_col] = coerced_df[str_col].fillna("").astype(str)
+
+                        coerced_df.dropna(subset=["timestamp", "client_ip"], inplace=True)
+                        coerced_df.sort_values("timestamp", inplace=True)
+                        coerced_df.reset_index(drop=True, inplace=True)
+
+                        raw_df = coerced_df
+                        source_label = f"CSV ({len(raw_df):,} rows)"
+                        st.success(source_label, icon=":material/check_circle:")
 
     st.markdown("---")
 
@@ -335,17 +393,21 @@ if raw_df is None or raw_df.empty:
 
 # Run the detection engine
 with st.spinner("Running beacon detection …"):
-    results_df = detect_beacons(
-        raw_df,
-        min_window_coverage_pct=min_window_coverage_pct,
-        min_total_requests=min_total_requests,
-        tolerance_pct=tolerance_pct,
-        min_resp_in_bounds_pct=min_resp_in_bounds_pct,
-        jitter_tolerance_pct=jitter_tolerance_pct,
-        min_delta_in_bounds_pct=min_delta_in_bounds_pct,
-        min_clean_deltas=min_clean_deltas,
-        outlier_percentile=float(outlier_percentile),
-    )
+    try:
+        results_df = detect_beacons(
+            raw_df,
+            min_window_coverage_pct=min_window_coverage_pct,
+            min_total_requests=min_total_requests,
+            tolerance_pct=tolerance_pct,
+            min_resp_in_bounds_pct=min_resp_in_bounds_pct,
+            jitter_tolerance_pct=jitter_tolerance_pct,
+            min_delta_in_bounds_pct=min_delta_in_bounds_pct,
+            min_clean_deltas=min_clean_deltas,
+            outlier_percentile=float(outlier_percentile),
+        )
+    except Exception as exc:
+        st.error(f"Detection engine failed: {exc}", icon=":material/error:")
+        st.stop()
 
 # Persist results to SQLite (non-blocking; failures are logged not raised)
 try:

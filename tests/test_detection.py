@@ -16,6 +16,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from datetime import datetime, timedelta, timezone
+import numpy as np
 import pandas as pd
 
 # Allow running from repository root or tests/ directory
@@ -285,6 +287,197 @@ class TestRealZeekLogs(unittest.TestCase):
         self.assertAlmostEqual(c2_row["est_sleep_sec"], 11.5, delta=3.0)
 
 
+class TestDiverseC2FrameworksAndEdgeCases(unittest.TestCase):
+    """
+    Validates detection across diverse C2 frameworks and edge cases:
+    - Cobalt Strike (malleable profiles, rotating URIs, 0-byte HTTP 204 responses)
+    - Sliver (50% jitter, direct-to-IP connection, variable payloads)
+    - Mythic (15s sleep, 30% jitter)
+    - Havoc Demon (30s sleep, 40% jitter, DGA domain)
+    - Multi-client lateral movement (multiple clients beaconing to same C2)
+    - Fast 1s beacon
+    - Low-and-slow 5-minute beacon
+    - Active tasking beacon with wide variable payloads (exfiltration)
+    - Zero-byte payload probe beacon (SYN / ping keepalive)
+    """
+
+    def setUp(self):
+        self.t0 = datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+        self.rng = np.random.default_rng(777)
+
+    def _generate_beacon_stream(
+        self,
+        dest_host: str,
+        interval_sec: float,
+        jitter_pct: float,
+        count: int = 50,
+        resp_size: int = 500,
+        sent_size: int = 100,
+        rotating_uris: bool = False,
+        variable_payload: bool = False,
+    ) -> pd.DataFrame:
+        t = self.t0
+        rows = []
+        for i in range(count):
+            jit = self.rng.uniform(-jitter_pct, jitter_pct) * interval_sec
+            t += timedelta(seconds=interval_sec + jit)
+            uri = f"/route/{i % 4}.action?tok={self.rng.integers(100, 999)}" if rotating_uris else "/session"
+            if variable_payload:
+                resp = int(self.rng.uniform(100, 45_000))
+                sent = int(self.rng.uniform(50, 15_000))
+            else:
+                resp = resp_size
+                sent = sent_size
+
+            rows.append({
+                "timestamp": t,
+                "client_ip": "10.0.0.15",
+                "dest_host": dest_host,
+                "uri": uri,
+                "protocol": "http",
+                "method": "POST" if i % 2 == 0 else "GET",
+                "bytes_sent": sent,
+                "bytes_received": resp,
+            })
+        return pd.DataFrame(rows)
+
+    def test_cobalt_strike_malleable_zero_resp(self):
+        """Cobalt Strike with malleable profile, rotating URIs, and 0-byte HTTP 204 responses."""
+        df = self._generate_beacon_stream(
+            dest_host="cs-beacon.c2infra.net",
+            interval_sec=60.0,
+            jitter_pct=0.20,
+            count=50,
+            resp_size=0,
+            sent_size=128,
+            rotating_uris=True,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect Cobalt Strike beacon with 0-byte responses")
+        row = results[results["dest_host"] == "cs-beacon.c2infra.net"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.70)
+        self.assertAlmostEqual(row["est_sleep_sec"], 60.0, delta=6.0)
+
+    def test_sliver_direct_ip_and_high_jitter(self):
+        """Sliver with direct IP address (no domain) and 50% jitter."""
+        df = self._generate_beacon_stream(
+            dest_host="198.51.100.88:443",
+            interval_sec=10.0,
+            jitter_pct=0.50,
+            count=70,
+            resp_size=256,
+            sent_size=96,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect Sliver direct-IP beacon with 50% jitter")
+        row = results[results["dest_host"] == "198.51.100.88:443"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.65)
+        self.assertAlmostEqual(row["est_sleep_sec"], 10.0, delta=2.5)
+
+    def test_mythic_json_beacon(self):
+        """Mythic C2 agent checking in every 15s with 30% jitter."""
+        df = self._generate_beacon_stream(
+            dest_host="mythic-agent.threatops.cc",
+            interval_sec=15.0,
+            jitter_pct=0.30,
+            count=55,
+            resp_size=380,
+            sent_size=190,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect Mythic agent beacon")
+        row = results[results["dest_host"] == "mythic-agent.threatops.cc"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.70)
+        self.assertAlmostEqual(row["est_sleep_sec"], 15.0, delta=3.0)
+
+    def test_havoc_demon_dga_domain(self):
+        """Havoc Demon C2 with 30s sleep, 40% jitter, and high-entropy DGA domain."""
+        df = self._generate_beacon_stream(
+            dest_host="x9z2w1k4.havoc-gateway.cc",
+            interval_sec=30.0,
+            jitter_pct=0.40,
+            count=50,
+            resp_size=420,
+            sent_size=150,
+            rotating_uris=True,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect Havoc Demon DGA beacon")
+        row = results[results["dest_host"] == "x9z2w1k4.havoc-gateway.cc"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.70)
+        self.assertAlmostEqual(row["est_sleep_sec"], 30.0, delta=5.0)
+
+    def test_multi_client_lateral_movement(self):
+        """Multiple compromised internal clients beaconing to the same C2 server."""
+        rows = []
+        for client_ip, offset_sec in [("10.0.0.11", 0), ("10.0.0.12", 18), ("10.0.0.13", 38)]:
+            t = self.t0 + timedelta(seconds=offset_sec)
+            for i in range(40):
+                t += timedelta(seconds=60.0 + self.rng.uniform(-0.15, 0.15) * 60)
+                rows.append({
+                    "timestamp": t,
+                    "client_ip": client_ip,
+                    "dest_host": "lateral-c2.infra.net",
+                    "uri": "/sync",
+                    "protocol": "http",
+                    "method": "POST",
+                    "bytes_sent": 128,
+                    "bytes_received": 256,
+                })
+        df = pd.DataFrame(rows).sort_values("timestamp")
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect multi-client lateral movement beacon")
+        row = results[results["dest_host"] == "lateral-c2.infra.net"].iloc[0]
+        self.assertEqual(row["unique_clients"], 3)
+        self.assertAlmostEqual(row["est_sleep_sec"], 60.0, delta=8.0)
+
+    def test_fast_1s_beacon(self):
+        """Fast 1.0s beacon with jitter."""
+        df = self._generate_beacon_stream(
+            dest_host="fast-agent.c2.io",
+            interval_sec=1.0,
+            jitter_pct=0.25,
+            count=75,
+            resp_size=64,
+            sent_size=64,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect fast 1s beacon")
+        row = results[results["dest_host"] == "fast-agent.c2.io"].iloc[0]
+        self.assertAlmostEqual(row["est_sleep_sec"], 1.0, delta=0.3)
+
+    def test_active_tasking_variable_payload(self):
+        """C2 session during active operator tasking with fluctuating response sizes."""
+        df = self._generate_beacon_stream(
+            dest_host="active-tasking.c2.io",
+            interval_sec=20.0,
+            jitter_pct=0.20,
+            count=60,
+            variable_payload=True,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect beacon during active tasking / variable payloads")
+        row = results[results["dest_host"] == "active-tasking.c2.io"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.55)
+        self.assertAlmostEqual(row["est_sleep_sec"], 20.0, delta=3.0)
+
+    def test_zero_byte_probe_beacon(self):
+        """C2 beacon sending and receiving 0 bytes (SYN probe / ping heartbeat)."""
+        df = self._generate_beacon_stream(
+            dest_host="zero-probe.c2.io",
+            interval_sec=25.0,
+            jitter_pct=0.15,
+            count=45,
+            resp_size=0,
+            sent_size=0,
+        )
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect 0-byte probe beacon")
+        row = results[results["dest_host"] == "zero-probe.c2.io"].iloc[0]
+        self.assertGreater(row["composite_score"], 0.70)
+        self.assertAlmostEqual(row["est_sleep_sec"], 25.0, delta=3.0)
+
+
 if __name__ == "__main__":
     # Run with verbose output
     loader = unittest.TestLoader()
@@ -294,6 +487,7 @@ if __name__ == "__main__":
     suite.addTests(loader.loadTestsFromTestCase(TestOutlierStripping))
     suite.addTests(loader.loadTestsFromTestCase(TestStorage))
     suite.addTests(loader.loadTestsFromTestCase(TestRealZeekLogs))
+    suite.addTests(loader.loadTestsFromTestCase(TestDiverseC2FrameworksAndEdgeCases))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

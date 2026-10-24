@@ -88,7 +88,12 @@ def score_survivors(filter_df: pd.DataFrame) -> pd.DataFrame:
         # ---------------------------------------------------------------- #
         # Payload CV                                                        #
         # ---------------------------------------------------------------- #
-        if len(bytes_received) < 2 or bytes_received.mean() == 0:
+        if len(bytes_received) < 2:
+            payload_cv = 1.0
+        elif float(bytes_received.std()) == 0.0:
+            # Perfectly uniform payload size (e.g. all 0 bytes or all 128 bytes)
+            payload_cv = 0.0
+        elif bytes_received.mean() == 0:
             payload_cv = 1.0
         else:
             payload_cv = float(bytes_received.std() / bytes_received.mean())
@@ -96,12 +101,22 @@ def score_survivors(filter_df: pd.DataFrame) -> pd.DataFrame:
         payload_score = max(0.0, 1.0 - payload_cv)
 
         # ---------------------------------------------------------------- #
-        # Domain Shannon entropy (DGA signal)                               #
-        # Only score the hostname label (left of first dot), not the TLD,  #
-        # because TLDs are legitimately short.                              #
+        # Domain Shannon entropy (DGA signal & IP detection)                #
+        # If dest_host is an IP address (or IP:port), assign a baseline     #
+        # suspicious indicator (2.25 bits / 4.5 = 0.50). For domain names,  #
+        # evaluate max entropy across labels excluding TLD to catch DGAs.   #
         # ---------------------------------------------------------------- #
-        label = dest_host.split(".")[0] if "." in dest_host else dest_host
-        domain_entropy = _shannon_entropy(label)
+        import re
+        host_clean = dest_host.split(":")[0]
+        if re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host_clean):
+            domain_entropy = 2.25
+        else:
+            parts = host_clean.split(".")
+            if len(parts) <= 1:
+                domain_entropy = _shannon_entropy(host_clean)
+            else:
+                domain_entropy = max(_shannon_entropy(p) for p in parts[:-1])
+
         entropy_score = min(domain_entropy / ENTROPY_NORM, 1.0)
 
         # ---------------------------------------------------------------- #

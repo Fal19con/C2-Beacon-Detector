@@ -119,9 +119,73 @@ def apply_filters(
             continue
 
         # ---------------------------------------------------------------- #
+        # Filter 4: Timing delta uniformity with outlier stripping         #
+        # (Evaluated first to establish timing regularity for Filter 3)     #
+        # ---------------------------------------------------------------- #
+        # Support multi-client beacons: if multiple infected clients beacon #
+        # to the same dest_host (lateral movement), interleaved timestamps  #
+        # can mask periodicity. We evaluate the timing uniformity of both  #
+        # the aggregate stream and each client stream, taking the best.    #
+        streams: list[tuple[str, np.ndarray]] = [("ALL", group["timestamp"].sort_values().values)]
+        if group["client_ip"].nunique() > 1:
+            for c_ip in group["client_ip"].unique():
+                c_df = group[group["client_ip"] == c_ip]
+                if len(c_df) >= min_clean_deltas:
+                    streams.append((str(c_ip), c_df["timestamp"].sort_values().values))
+
+        best_cv = 999.0
+        best_clean_deltas = np.array([])
+        best_sleep = 0.0
+        best_delta_in_bounds_pct = 0.0
+
+        for _stream_label, ts_values in streams:
+            ts_series = pd.Series(ts_values)
+            deltas_all = ts_series.diff().dropna().dt.total_seconds().values
+            # Filter sub-250ms bursts (TCP connection reuse / pipelined sub-resources)
+            # while preserving fast beacons with 0.5s - 1.0s sleep
+            deltas = deltas_all[deltas_all >= 0.25]
+            if len(deltas) < min_clean_deltas:
+                continue
+
+            # Strip overnight-gap / lid-closed outliers above outlier_percentile
+            p_outlier = float(np.percentile(deltas, outlier_percentile))
+            clean_d = deltas[deltas <= p_outlier]
+            if len(clean_d) < min_clean_deltas:
+                continue
+
+            est_sleep_cand = float(np.median(clean_d))
+            if est_sleep_cand <= 0:
+                continue
+
+            cv_cand = float(np.std(clean_d) / np.mean(clean_d))
+            lower_d = est_sleep_cand * (1.0 - jitter_tolerance_pct)
+            upper_d = est_sleep_cand * (1.0 + jitter_tolerance_pct)
+            in_b_d = np.sum((clean_d >= lower_d) & (clean_d <= upper_d)) / len(clean_d)
+
+            if cv_cand < best_cv:
+                best_cv = cv_cand
+                best_clean_deltas = clean_d
+                best_sleep = est_sleep_cand
+                best_delta_in_bounds_pct = in_b_d
+
+        if len(best_clean_deltas) < min_clean_deltas:
+            logger.debug("FILTER4 drop: %s  not enough clean deltas", dest_host)
+            continue
+
+        # Allow candidates if in-bounds percentage meets threshold, or if overall timing CV <= 0.42
+        # (mathematically covering real-world C2 frameworks with up to 60-70% jitter)
+        if best_delta_in_bounds_pct < min_delta_in_bounds_pct and best_cv > 0.42:
+            logger.debug(
+                "FILTER4 drop: %s  delta_in_bounds=%.2f < %.2f and timing_cv=%.4f > 0.42",
+                dest_host, best_delta_in_bounds_pct, min_delta_in_bounds_pct, best_cv,
+            )
+            continue
+
+        # ---------------------------------------------------------------- #
         # Filter 3: Payload size consistency                               #
-        # Evaluates bytes_received and bytes_sent, including per-method    #
-        # slices (e.g. POST beacon check-ins vs GET sub-resources).        #
+        # Evaluates bytes_received and bytes_sent, including 0-byte        #
+        # check-ins (HTTP 204 No Content), per-method slices, and active   #
+        # tasking sessions where timing periodicity confirms beaconing.    #
         # ---------------------------------------------------------------- #
         best_payload_pct = 0.0
         best_payload_median = 0.0
@@ -132,7 +196,16 @@ def apply_filters(
                 continue
             col_vals = group[col].values.astype(float)
             col_med = float(np.median(col_vals))
-            if col_med > 0:
+
+            if col_med == 0:
+                # 0-byte payloads (e.g. HTTP 204 No Content check-ins, TCP SYN pings)
+                in_b = np.sum(col_vals == 0)
+                pct = in_b / total_requests
+                if pct > best_payload_pct:
+                    best_payload_pct = pct
+                    best_payload_median = 0.0
+                    best_payload_series = col_vals
+            else:
                 lower = col_med * (1.0 - tolerance_pct)
                 upper = col_med * (1.0 + tolerance_pct)
                 in_b = np.sum((col_vals >= lower) & (col_vals <= upper))
@@ -149,66 +222,25 @@ def apply_filters(
                     if len(sub_method) >= 5:
                         m_vals = sub_method[col].values.astype(float)
                         m_med = float(np.median(m_vals))
-                        if m_med > 0:
+                        if m_med == 0:
+                            in_b = np.sum(m_vals == 0)
+                            pct = in_b / len(m_vals)
+                        else:
                             lower = m_med * (1.0 - tolerance_pct)
                             upper = m_med * (1.0 + tolerance_pct)
                             in_b = np.sum((m_vals >= lower) & (m_vals <= upper))
                             pct = in_b / len(m_vals)
-                            if pct > best_payload_pct:
-                                best_payload_pct = pct
-                                best_payload_median = m_med
-                                best_payload_series = m_vals
+                        if pct > best_payload_pct:
+                            best_payload_pct = pct
+                            best_payload_median = m_med
+                            best_payload_series = m_vals
 
-        if best_payload_median == 0 or best_payload_pct < min_resp_in_bounds_pct:
+        # Pass if payload consistency is high OR if timing periodicity is strong (CV <= 0.35)
+        # to ensure active C2 tasking sessions (variable command payloads) are not dropped.
+        if best_payload_pct < min_resp_in_bounds_pct and best_cv > 0.35:
             logger.debug(
-                "FILTER3 drop: %s  best_payload_in_bounds=%.2f < %.2f (median=%.1f)",
-                dest_host, best_payload_pct, min_resp_in_bounds_pct, best_payload_median,
-            )
-            continue
-
-        # ---------------------------------------------------------------- #
-        # Filter 4: Timing delta uniformity with outlier stripping          #
-        # ---------------------------------------------------------------- #
-        ts_sorted = group["timestamp"].sort_values()
-        deltas_all = ts_sorted.diff().dropna().dt.total_seconds().values
-
-        # Drop sub-1-second deltas (burst / sub-resource noise)
-        deltas = deltas_all[deltas_all >= 1.0]
-
-        if len(deltas) < min_clean_deltas:
-            logger.debug(
-                "FILTER4 drop: %s  not enough deltas before strip (%d)",
-                dest_host, len(deltas),
-            )
-            continue
-
-        # Strip overnight-gap / lid-closed outliers above outlier_percentile
-        p_outlier = float(np.percentile(deltas, outlier_percentile))
-        clean_deltas = deltas[deltas <= p_outlier]
-
-        if len(clean_deltas) < min_clean_deltas:
-            logger.debug(
-                "FILTER4 drop: %s  not enough clean deltas (%d) after p%d strip",
-                dest_host, len(clean_deltas), int(outlier_percentile),
-            )
-            continue
-
-        est_sleep = float(np.median(clean_deltas))
-        if est_sleep == 0:
-            continue
-
-        lower_d = est_sleep * (1.0 - jitter_tolerance_pct)
-        upper_d = est_sleep * (1.0 + jitter_tolerance_pct)
-        in_bounds_d = np.sum((clean_deltas >= lower_d) & (clean_deltas <= upper_d))
-        delta_in_bounds_pct = in_bounds_d / len(clean_deltas)
-        timing_cv = float(np.std(clean_deltas) / np.mean(clean_deltas))
-
-        # Pass if in-bounds percentage meets threshold, or if overall timing CV is low (<= 0.40)
-        # confirming low-variance jittered periodicity.
-        if delta_in_bounds_pct < min_delta_in_bounds_pct and timing_cv > 0.40:
-            logger.debug(
-                "FILTER4 drop: %s  delta_in_bounds=%.2f < %.2f and timing_cv=%.4f > 0.40",
-                dest_host, delta_in_bounds_pct, min_delta_in_bounds_pct, timing_cv,
+                "FILTER3 drop: %s  best_payload_in_bounds=%.2f < %.2f and timing_cv=%.4f > 0.35",
+                dest_host, best_payload_pct, min_resp_in_bounds_pct, best_cv,
             )
             continue
 
@@ -223,9 +255,9 @@ def apply_filters(
                 "window_coverage_pct": coverage,
                 "resp_median": best_payload_median,
                 "resp_in_bounds_pct": best_payload_pct,
-                "est_sleep_sec": est_sleep,
-                "clean_deltas": clean_deltas.tolist(),
-                "delta_in_bounds_pct": delta_in_bounds_pct,
+                "est_sleep_sec": best_sleep,
+                "clean_deltas": best_clean_deltas.tolist(),
+                "delta_in_bounds_pct": best_delta_in_bounds_pct,
                 "bytes_received_list": best_payload_series.tolist(),
                 "client_ips": group["client_ip"].tolist(),
             }

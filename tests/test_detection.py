@@ -12,8 +12,11 @@ Assertions:
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+import pandas as pd
 
 # Allow running from repository root or tests/ directory
 _ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +25,7 @@ if str(_ROOT) not in sys.path:
 
 from ingest.synthetic_generator import generate_sample_logs, get_beacon_info
 from detection.engine import detect_beacons
+from db.storage import save_results, load_history, clear_history
 
 
 # Hard-coded seed for reproducibility across all test runs
@@ -221,6 +225,66 @@ class TestOutlierStripping(unittest.TestCase):
         )
 
 
+class TestStorage(unittest.TestCase):
+    """Checks for SQLite persistence save, load, and clear behavior."""
+
+    def test_save_load_clear_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_db = Path(tmpdir) / "test_scan_results.db"
+            # Initially empty
+            df_init = load_history(test_db)
+            self.assertTrue(df_init.empty)
+
+            # Save fake results
+            fake_results = pd.DataFrame([
+                {
+                    "dest_host": "test.c2infra.net",
+                    "uri": "/beacon",
+                    "total_requests": 100,
+                    "unique_clients": 1,
+                    "est_sleep_sec": 60.0,
+                    "timing_cv": 0.05,
+                    "payload_cv": 0.02,
+                    "domain_entropy": 3.5,
+                    "composite_score": 0.85,
+                    "window_coverage_pct": 0.95,
+                    "resp_consistency_pct": 1.0,
+                }
+            ])
+            run_id = save_results(fake_results, test_db)
+            self.assertTrue(run_id)
+
+            # Verify loaded
+            df_loaded = load_history(test_db)
+            self.assertEqual(len(df_loaded), 1)
+            self.assertEqual(df_loaded.iloc[0]["dest_host"], "test.c2infra.net")
+
+            # Clear and verify empty
+            clear_history(test_db)
+            df_cleared = load_history(test_db)
+            self.assertTrue(df_cleared.empty)
+
+
+from ingest.zeek_ingestor import load_zeek_logs
+
+
+class TestRealZeekLogs(unittest.TestCase):
+    """Verifies detection on real Zeek logs with malleable C2 / rotating endpoints."""
+
+    def test_demo_zeek_c2_flagged(self):
+        demo_dir = Path("/home/zer0daydreamer/Desktop/zeek-demo-logs")
+        if not demo_dir.exists():
+            self.skipTest(f"Demo directory {demo_dir} not found")
+
+        df = load_zeek_logs(demo_dir)
+        results = detect_beacons(df)
+        self.assertFalse(results.empty, "Failed to detect C2 in real Zeek demo logs")
+        self.assertIn("192.168.197.1:8080", results["dest_host"].values)
+        c2_row = results[results["dest_host"] == "192.168.197.1:8080"].iloc[0]
+        self.assertGreater(c2_row["composite_score"], 0.50)
+        self.assertAlmostEqual(c2_row["est_sleep_sec"], 11.5, delta=3.0)
+
+
 if __name__ == "__main__":
     # Run with verbose output
     loader = unittest.TestLoader()
@@ -228,7 +292,11 @@ if __name__ == "__main__":
     suite.addTests(loader.loadTestsFromTestCase(TestSyntheticGenerator))
     suite.addTests(loader.loadTestsFromTestCase(TestDetectionEngine))
     suite.addTests(loader.loadTestsFromTestCase(TestOutlierStripping))
+    suite.addTests(loader.loadTestsFromTestCase(TestStorage))
+    suite.addTests(loader.loadTestsFromTestCase(TestRealZeekLogs))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     sys.exit(0 if result.wasSuccessful() else 1)
+
+

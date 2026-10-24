@@ -146,3 +146,22 @@ def load_history(db_path: Path = _DEFAULT_DB_PATH, limit: int = 500) -> pd.DataF
     except Exception as exc:  # noqa: BLE001
         logger.error("Failed to load history: %s", exc)
         return pd.DataFrame()
+
+
+def clear_history(db_path: Path = _DEFAULT_DB_PATH) -> None:
+    """
+    Clear all records from the scan_results table in SQLite.
+    """
+    if not db_path.exists():
+        return
+
+    try:
+        conn = _get_connection(db_path)
+        conn.execute("DELETE FROM scan_results")
+        conn.commit()
+        conn.execute("VACUUM")
+        conn.close()
+        logger.info("Cleared scan history.")
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Failed to clear history: %s", exc)
+

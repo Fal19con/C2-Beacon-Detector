@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_WINDOW_COVERAGE_PCT: float = 0.30   # 30%
 DEFAULT_MIN_TOTAL_REQUESTS: int = 20
 DEFAULT_TOLERANCE_PCT: float = 0.50             # ±50% around median resp size
-DEFAULT_MIN_RESP_IN_BOUNDS_PCT: float = 0.80    # 80% must be within bounds
-DEFAULT_JITTER_TOLERANCE_PCT: float = 0.30      # ±30% around est sleep
-DEFAULT_MIN_DELTA_IN_BOUNDS_PCT: float = 0.70   # 70% of clean deltas in bounds
+DEFAULT_MIN_RESP_IN_BOUNDS_PCT: float = 0.70    # 70% must be within bounds
+DEFAULT_JITTER_TOLERANCE_PCT: float = 0.40      # ±40% around est sleep (covers 30-50% C2 jitter)
+DEFAULT_MIN_DELTA_IN_BOUNDS_PCT: float = 0.55   # 55% of clean deltas in bounds
 DEFAULT_MIN_CLEAN_DELTAS: int = 5               # require ≥5 after stripping
 DEFAULT_OUTLIER_PERCENTILE: float = 90.0        # strip deltas above this pct
 
@@ -62,7 +62,7 @@ def apply_filters(
     outlier_percentile: float = DEFAULT_OUTLIER_PERCENTILE,
 ) -> pd.DataFrame:
     """
-    Apply the four hard filters to *df* grouped by (dest_host, uri).
+    Apply the four hard filters to *df* grouped by dest_host.
 
     Returns a DataFrame with one row per surviving group, containing the
     pre-computed fields needed by scoring.py:
@@ -70,7 +70,7 @@ def apply_filters(
         dest_host, uri, total_requests, active_days, total_days,
         window_coverage_pct, resp_median, resp_in_bounds_pct,
         est_sleep_sec, clean_deltas (as list), delta_in_bounds_pct,
-        bytes_received (as list)
+        bytes_received_list (as list), client_ips (as list)
     """
     if df.empty:
         return pd.DataFrame()
@@ -80,11 +80,21 @@ def apply_filters(
 
     survivors: list[dict[str, Any]] = []
 
-    grouped = df.groupby(["dest_host", "uri"], sort=False)
+    # Group by destination host: beaconing is a host-level C2 channel.
+    # Grouping by (dest_host, uri) falsely fragments traffic when malleable C2 profiles
+    # rotate URI paths or query strings across requests.
+    grouped = df.groupby("dest_host", sort=False)
 
-    for (dest_host, uri), group in grouped:
+    for dest_host, group in grouped:
         group = group.sort_values("timestamp")
         total_requests = len(group)
+
+        # Dominant URI for reporting (prefer non-empty URI)
+        non_empty_uris = group["uri"][group["uri"].astype(str).str.strip() != ""]
+        if not non_empty_uris.empty:
+            uri = str(non_empty_uris.value_counts().index[0])
+        else:
+            uri = ""
 
         # ---------------------------------------------------------------- #
         # Filter 1: Persistence / window coverage                           #
@@ -93,8 +103,8 @@ def apply_filters(
         coverage = active_days / total_days
         if coverage < min_window_coverage_pct:
             logger.debug(
-                "FILTER1 drop: %s%s  coverage=%.2f < %.2f",
-                dest_host, uri, coverage, min_window_coverage_pct,
+                "FILTER1 drop: %s  coverage=%.2f < %.2f",
+                dest_host, coverage, min_window_coverage_pct,
             )
             continue
 
@@ -103,28 +113,56 @@ def apply_filters(
         # ---------------------------------------------------------------- #
         if total_requests < min_total_requests:
             logger.debug(
-                "FILTER2 drop: %s%s  requests=%d < %d",
-                dest_host, uri, total_requests, min_total_requests,
+                "FILTER2 drop: %s  requests=%d < %d",
+                dest_host, total_requests, min_total_requests,
             )
             continue
 
         # ---------------------------------------------------------------- #
-        # Filter 3: Response size consistency (median-based)               #
+        # Filter 3: Payload size consistency                               #
+        # Evaluates bytes_received and bytes_sent, including per-method    #
+        # slices (e.g. POST beacon check-ins vs GET sub-resources).        #
         # ---------------------------------------------------------------- #
-        resp = group["bytes_received"].values.astype(float)
-        resp_median = float(np.median(resp))
-        if resp_median == 0:
-            logger.debug("FILTER3 drop: %s%s  median bytes_received=0", dest_host, uri)
-            continue
+        best_payload_pct = 0.0
+        best_payload_median = 0.0
+        best_payload_series = group["bytes_received"].values.astype(float)
 
-        lower = resp_median * (1.0 - tolerance_pct)
-        upper = resp_median * (1.0 + tolerance_pct)
-        in_bounds = np.sum((resp >= lower) & (resp <= upper))
-        resp_in_bounds_pct = in_bounds / total_requests
-        if resp_in_bounds_pct < min_resp_in_bounds_pct:
+        for col in ("bytes_received", "bytes_sent"):
+            if col not in group.columns:
+                continue
+            col_vals = group[col].values.astype(float)
+            col_med = float(np.median(col_vals))
+            if col_med > 0:
+                lower = col_med * (1.0 - tolerance_pct)
+                upper = col_med * (1.0 + tolerance_pct)
+                in_b = np.sum((col_vals >= lower) & (col_vals <= upper))
+                pct = in_b / total_requests
+                if pct > best_payload_pct:
+                    best_payload_pct = pct
+                    best_payload_median = col_med
+                    best_payload_series = col_vals
+
+            # Evaluate per-method consistency if multiple methods exist
+            if "method" in group.columns and group["method"].nunique() > 1:
+                for method_val in group["method"].unique():
+                    sub_method = group[group["method"] == method_val]
+                    if len(sub_method) >= 5:
+                        m_vals = sub_method[col].values.astype(float)
+                        m_med = float(np.median(m_vals))
+                        if m_med > 0:
+                            lower = m_med * (1.0 - tolerance_pct)
+                            upper = m_med * (1.0 + tolerance_pct)
+                            in_b = np.sum((m_vals >= lower) & (m_vals <= upper))
+                            pct = in_b / len(m_vals)
+                            if pct > best_payload_pct:
+                                best_payload_pct = pct
+                                best_payload_median = m_med
+                                best_payload_series = m_vals
+
+        if best_payload_median == 0 or best_payload_pct < min_resp_in_bounds_pct:
             logger.debug(
-                "FILTER3 drop: %s%s  resp_in_bounds=%.2f < %.2f",
-                dest_host, uri, resp_in_bounds_pct, min_resp_in_bounds_pct,
+                "FILTER3 drop: %s  best_payload_in_bounds=%.2f < %.2f (median=%.1f)",
+                dest_host, best_payload_pct, min_resp_in_bounds_pct, best_payload_median,
             )
             continue
 
@@ -139,19 +177,19 @@ def apply_filters(
 
         if len(deltas) < min_clean_deltas:
             logger.debug(
-                "FILTER4 drop: %s%s  not enough deltas before strip (%d)",
-                dest_host, uri, len(deltas),
+                "FILTER4 drop: %s  not enough deltas before strip (%d)",
+                dest_host, len(deltas),
             )
             continue
 
-        # Strip overnight-gap / lid-closed outliers above 90th percentile
-        p90 = float(np.percentile(deltas, outlier_percentile))
-        clean_deltas = deltas[deltas <= p90]
+        # Strip overnight-gap / lid-closed outliers above outlier_percentile
+        p_outlier = float(np.percentile(deltas, outlier_percentile))
+        clean_deltas = deltas[deltas <= p_outlier]
 
         if len(clean_deltas) < min_clean_deltas:
             logger.debug(
-                "FILTER4 drop: %s%s  not enough clean deltas (%d) after p%d strip",
-                dest_host, uri, len(clean_deltas), int(outlier_percentile),
+                "FILTER4 drop: %s  not enough clean deltas (%d) after p%d strip",
+                dest_host, len(clean_deltas), int(outlier_percentile),
             )
             continue
 
@@ -163,11 +201,14 @@ def apply_filters(
         upper_d = est_sleep * (1.0 + jitter_tolerance_pct)
         in_bounds_d = np.sum((clean_deltas >= lower_d) & (clean_deltas <= upper_d))
         delta_in_bounds_pct = in_bounds_d / len(clean_deltas)
+        timing_cv = float(np.std(clean_deltas) / np.mean(clean_deltas))
 
-        if delta_in_bounds_pct < min_delta_in_bounds_pct:
+        # Pass if in-bounds percentage meets threshold, or if overall timing CV is low (<= 0.40)
+        # confirming low-variance jittered periodicity.
+        if delta_in_bounds_pct < min_delta_in_bounds_pct and timing_cv > 0.40:
             logger.debug(
-                "FILTER4 drop: %s%s  delta_in_bounds=%.2f < %.2f",
-                dest_host, uri, delta_in_bounds_pct, min_delta_in_bounds_pct,
+                "FILTER4 drop: %s  delta_in_bounds=%.2f < %.2f and timing_cv=%.4f > 0.40",
+                dest_host, delta_in_bounds_pct, min_delta_in_bounds_pct, timing_cv,
             )
             continue
 
@@ -180,12 +221,12 @@ def apply_filters(
                 "active_days": active_days,
                 "total_days": total_days,
                 "window_coverage_pct": coverage,
-                "resp_median": resp_median,
-                "resp_in_bounds_pct": resp_in_bounds_pct,
+                "resp_median": best_payload_median,
+                "resp_in_bounds_pct": best_payload_pct,
                 "est_sleep_sec": est_sleep,
                 "clean_deltas": clean_deltas.tolist(),
                 "delta_in_bounds_pct": delta_in_bounds_pct,
-                "bytes_received_list": resp.tolist(),
+                "bytes_received_list": best_payload_series.tolist(),
                 "client_ips": group["client_ip"].tolist(),
             }
         )
